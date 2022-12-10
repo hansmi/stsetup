@@ -14,6 +14,7 @@ NFPM_CONTAINER_IMAGE := docker.io/goreleaser/nfpm:latest
 NFPM_COMMAND := \
 	$(DOCKER) run --rm --user $(CURRENT_UID):$(CURRENT_GID) \
 	--volume '$(PWD):/build:rw' -w /build \
+	--env GITHUB_REF_NAME \
 	$(NFPM_CONTAINER_IMAGE)
 
 PACKAGERS := apk deb
