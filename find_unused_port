@@ -1,0 +1,38 @@
+#!/usr/bin/python3
+#
+# Copyright (c) 2022 Michael Hanselmann. All rights reserved. Released under
+# the BSD-3-Clause license.
+#
+"""
+Find and print an available TCP port. Note that there is a race condition
+between picking a port and another application binding to it (i.e. the port may
+no longer be available).
+"""
+
+import argparse
+import socket
+
+
+def main():
+  parser = argparse.ArgumentParser(description=__doc__)
+  parser.parse_args()
+
+  sock = socket.socket(family=socket.AF_INET6)
+
+  try:
+    sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+  except socket.error:
+    pass
+
+  # Request operating system to pick a random free port.
+  sock.bind(('::', 0))
+
+  (_, port, _, _, ) = sock.getsockname()
+
+  print(port)
+
+
+if __name__ == "__main__":
+  main()
+
+# vim: set sw=2 sts=2 et :

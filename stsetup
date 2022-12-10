@@ -1,0 +1,257 @@
+#!/bin/bash
+#
+# Copyright (c) 2022 Michael Hanselmann. All rights reserved. Released under
+# the BSD-3-Clause license.
+#
+
+set -e -u -o pipefail
+
+# Modelled after Syncthing's defaultConfigDir function.
+#
+# https://github.com/syncthing/syncthing/blob/v1.22.2/lib/locations/locations.go#L174-L194
+get_default_config_dir() {
+  local kernel_name
+
+  kernel_name=$(uname -s)
+
+  case "${kernel_name,,}" in
+    darwin)
+      echo "${HOME}/Library/Application Support/Syncthing"
+      ;;
+    linux)
+      echo "${XDG_CONFIG_HOME:-${HOME}/.config}/syncthing"
+      ;;
+    *)
+      echo "Unhandled operating system ${kernel_name@Q}." >&2
+      return 1
+      ;;
+  esac
+}
+
+default_config_dir=$(get_default_config_dir)
+default_api_address=127.0.0.1:8384
+
+usage() {
+  echo "Usage: $0 [options] <jq-file>"
+  echo
+  echo 'Modify the configuration of a Syncthing instance using a jq filter.'
+  echo
+  echo 'Options:'
+  echo '  -v        Verbose output.'
+  echo '  -c DIR    Directory with Syncthing configuration. Defaults to' \
+    "${default_config_dir@Q}."
+  echo '  -a HOST:PORT'
+  echo '            HTTP endpoint with REST API. Defaults to the' \
+    'STGUIADDRESS environment variable (if defined), the API address read' \
+    'from config.xml (if found) or the static value of' \
+    "${default_api_address@Q}."
+}
+
+config_dir=
+api_address=
+verbose=
+
+while getopts 'hvc:a:' opt; do
+  case "$opt" in
+    h)
+      usage
+      exit 0
+      ;;
+    v) verbose=yes ;;
+    c) config_dir="$OPTARG" ;;
+    a) api_address="$OPTARG" ;;
+    *)
+      usage >&2
+      exit 1
+      ;;
+  esac
+done
+
+shift $((OPTIND - 1))
+
+if [[ "$#" != 1 ]]; then
+  usage >&2
+  exit 1
+fi
+
+script="$1"
+
+if [[ -z "$config_dir" ]]; then
+  config_dir="$default_config_dir"
+fi
+
+config_file="${config_dir}/config.xml"
+
+tmpdir=$(mktemp -d)
+trap 'rm -rf "$tmpdir"' EXIT
+
+verbose_enabled() {
+  [[ -n "$verbose" ]]
+}
+
+# Evaluate an XPath expression against Syncthing's configuration file.
+config_xpath() {
+  xmllint --nocatalogs --nonet "$config_file" --xpath "$1"
+}
+
+# Determine base URL for Syncthing REST API.
+api_url() {
+  local result
+
+  result="$api_address"
+
+  if [[ -z "$result" && -n "${STGUIADDRESS:-}" ]]; then
+    result="${STGUIADDRESS:-}"
+  fi
+
+  if [[ -z "$result" && -e "$config_file" ]]; then
+    result=$(config_xpath 'string(configuration/gui[1]/address/text())')
+  fi
+
+  if [[ -z "$result" ]]; then
+    result="$default_api_address"
+  fi
+
+  result=${result/#0.0.0.0:/127.0.0.1:}
+
+  case "$result" in
+    unix:* | http*:*) ;;
+    *) result="http://${result}" ;;
+  esac
+
+  echo "$result"
+}
+
+# Execute a request against the Syncthing REST API. The first argument is the
+# path, all others are passed to curl.
+fetch() {
+  local path="$1"; shift
+  local url socket=
+
+  url=$(api_url)
+
+  if [[ "$url" = unix:* ]]; then
+    socket=${url#unix:}
+    url="http://localhost${path}"
+  fi
+
+  if verbose_enabled; then
+    echo "Requesting ${path}" >&2
+  fi
+
+  curl --silent --show-error --fail \
+    --retry 3 --retry-delay 1 --retry-connrefused \
+    --header "@${tmpdir}/headers" \
+    ${socket:+--unix-socket "$socket"} \
+    "$@" "${url}${path}"
+}
+
+# Wait for the Syncthing REST API to become available and store the necessary
+# authentication information for futher use.
+wait_api() {
+  local attempt
+
+  : > "${tmpdir}/apikey"
+  : > "${tmpdir}/headers"
+
+  for ((attempt=0; ; ++attempt)); do
+    if \
+      config_xpath 'string(configuration/gui[1]/apikey/text())' > "${tmpdir}/apikey" &&
+      [[ -s "${tmpdir}/apikey" ]] && \
+      fetch /rest/noauth/health >/dev/null
+    then
+      break
+    fi
+
+    if (( attempt > 10 )); then
+      echo 'API did not become available on time.' >&2
+      return 1
+    fi
+
+    sleep 1
+  done
+
+  {
+    if [[ -s "${tmpdir}/apikey" ]]; then
+      printf 'X-API-Key: '
+      cat "${tmpdir}/apikey"
+    fi
+  } > "${tmpdir}/headers"
+
+  return 0
+}
+
+# Wait for Syncthing's start time to be changed from its original value.
+wait_restart() {
+  local attempt
+
+  for ((attempt=0; ; ++attempt)); do
+    if \
+      fetch /rest/system/status > "${tmpdir}/restart-status" && \
+      jq --raw-output --exit-status \
+        --slurpfile original_status "${tmpdir}/status" \
+        '.startTime != $original_status[0].startTime' \
+        "${tmpdir}/restart-status" >/dev/null
+    then
+      break
+    fi
+
+    if (( attempt > 10 )); then
+      echo 'Syncthing did not restart on time.' >&2
+      return 1
+    fi
+
+    sleep 1
+  done
+
+  return 0
+}
+
+wait_api
+
+fetch /rest/system/status > "${tmpdir}/status"
+
+local_device_id=$(jq --raw-output .myID "${tmpdir}/status")
+
+if [[ "$local_device_id" != *-*-* ]]; then
+  echo "Invalid local device ID: ${local_device_id}." >&2
+  exit 1
+fi
+
+# Fetch and normalize configuration
+fetch /rest/config | jq --raw-output --sort-keys . > "${tmpdir}/config"
+
+# Patch configuration
+jq --raw-output --sort-keys \
+  --from-file "$script" \
+  --arg local_device_id "${local_device_id:?}" \
+  "${tmpdir}/config" > "${tmpdir}/config-changed"
+
+if verbose_enabled; then
+  {
+    echo Configuration:
+    cat "${tmpdir}/config-changed"
+  } >&2
+fi
+
+if diff -u "${tmpdir}/config" "${tmpdir}/config-changed"; then
+  echo 'No configuration changes.' >&2
+else
+  echo 'Applying configuration changes.' >&2
+  fetch /rest/config -XPUT --data "@${tmpdir}/config-changed"
+fi
+
+fetch /rest/config/restart-required > "${tmpdir}/restart-required"
+
+if jq --exit-status .requiresRestart "${tmpdir}/restart-required" >/dev/null; then
+  echo 'Syncthing requires restart.' >&2
+  fetch /rest/system/restart -XPOST
+  echo 'Waiting for Syncthing to restart.' >&2
+  wait_restart
+fi
+
+echo 'Syncthing setup successful.' >&2
+
+exit 0
+
+# vim: set sw=2 sts=2 et :

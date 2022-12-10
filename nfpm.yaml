@@ -1,0 +1,28 @@
+# Configuration for nFPM
+# https://nfpm.goreleaser.com/
+
+name: stsetup
+arch: all
+version: ${GITHUB_REF_NAME}
+
+description: Configure Syncthing using jq filter
+maintainer: M. Hanselmann
+homepage: https://github.com/hansmi/stsetup
+license: BSD-3-Clause
+
+depends:
+  - bash
+  - curl
+  - jq
+  - libxml2-utils
+
+recommends:
+  - syncthing
+
+contents:
+  - src: ./stsetup
+    dst: /usr/bin/stsetup
+  - src: ./find_unused_port
+    dst: /usr/lib/stsetup/find_unused_port
+
+# vim: set sw=2 sts=2 et :
