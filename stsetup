@@ -132,7 +132,7 @@ fetch() {
 
   if [[ "$url" = unix:* ]]; then
     socket=${url#unix:}
-    url="http://localhost${path}"
+    url=http://localhost
   fi
 
   if verbose_enabled; then
