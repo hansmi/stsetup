@@ -241,6 +241,8 @@ else
   fetch /rest/config -XPUT --data "@${tmpdir}/config-changed"
 fi
 
+wait_api
+
 fetch /rest/config/restart-required > "${tmpdir}/restart-required"
 
 if jq --exit-status .requiresRestart "${tmpdir}/restart-required" >/dev/null; then
