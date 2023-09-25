@@ -3,7 +3,7 @@
 
 name: stsetup
 arch: all
-version: ${GITHUB_REF_NAME}
+version: ${STSETUP_VERSION}
 
 description: Configure Syncthing using jq filter
 maintainer: M. Hanselmann

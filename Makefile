@@ -10,11 +10,13 @@ CURRENT_GID := $(shell id -g)
 
 DOCKER := docker
 
+VERSION := $(shell echo '$(GITHUB_REF_NAME)' | sed -r -e 's#[^-.a-zA-Z0-9]+#-#g')
+
 NFPM_CONTAINER_IMAGE := docker.io/goreleaser/nfpm:latest
 NFPM_COMMAND := \
 	$(DOCKER) run --rm --user $(CURRENT_UID):$(CURRENT_GID) \
 	--volume '$(PWD):/build:rw' -w /build \
-	--env GITHUB_REF_NAME \
+	--env 'STSETUP_VERSION=$(VERSION)' \
 	$(NFPM_CONTAINER_IMAGE)
 
 PACKAGERS := apk deb
