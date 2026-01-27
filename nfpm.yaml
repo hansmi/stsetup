@@ -25,4 +25,7 @@ contents:
   - src: ./find_unused_port
     dst: /usr/lib/stsetup/find_unused_port
 
+apk:
+  arch: noarch
+
 # vim: set sw=2 sts=2 et :
